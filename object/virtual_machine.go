@@ -1,5 +1,5 @@
 // © Broadcom. All Rights Reserved.
-// The term “Broadcom” refers to Broadcom Inc. and/or its subsidiaries.
+// The term "Broadcom" refers to Broadcom Inc. and/or its subsidiaries.
 // SPDX-License-Identifier: Apache-2.0
 
 package object
@@ -1110,4 +1110,40 @@ func (v *VirtualMachine) PromoteDisks(ctx context.Context, unlink bool, disks []
 	}
 
 	return NewTask(v.Client(), res.Returnval), nil
+}
+
+// FindSnapshotTree returns the VirtualMachineSnapshotTree object for a given snapshot.
+// The name parameter can be either the snapshot name or the ManagedObjectReference value.
+func (v VirtualMachine) FindSnapshotTree(ctx context.Context, name string) (*types.VirtualMachineSnapshotTree, error) {
+	var o mo.VirtualMachine
+
+	err := v.Properties(ctx, v.Reference(), []string{"snapshot"}, &o)
+	if err != nil {
+		return nil, err
+	}
+
+	if o.Snapshot == nil || len(o.Snapshot.RootSnapshotList) == 0 {
+		return nil, errors.New("no snapshots for this VM")
+	}
+
+	// Helper function to search recursively
+	var findSnapshot func([]types.VirtualMachineSnapshotTree) *types.VirtualMachineSnapshotTree
+	findSnapshot = func(trees []types.VirtualMachineSnapshotTree) *types.VirtualMachineSnapshotTree {
+		for _, tree := range trees {
+			// Match by snapshot name or ManagedObjectReference value
+			if tree.Name == name || tree.Snapshot.Value == name {
+				return &tree
+			}
+			if result := findSnapshot(tree.ChildSnapshotList); result != nil {
+				return result
+			}
+		}
+		return nil
+	}
+
+	if result := findSnapshot(o.Snapshot.RootSnapshotList); result != nil {
+		return result, nil
+	}
+
+	return nil, fmt.Errorf("snapshot %q not found", name)
 }

@@ -1,5 +1,5 @@
 // © Broadcom. All Rights Reserved.
-// The term “Broadcom” refers to Broadcom Inc. and/or its subsidiaries.
+// The term "Broadcom" refers to Broadcom Inc. and/or its subsidiaries.
 // SPDX-License-Identifier: Apache-2.0
 
 package simulator
@@ -2047,8 +2047,182 @@ func TestVmSnapshotEx(t *testing.T) {
 		if err == nil {
 			t.Fatal("all snapshots should be removed")
 		}
+	})
+}
 
-	}, esx)
+func TestVmFindSnapshotTree(t *testing.T) {
+	ctx := context.Background()
+
+	m := ESX()
+	defer m.Remove()
+	err := m.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := m.Service.NewServer()
+	defer s.Close()
+
+	c, err := govmomi.NewClient(ctx, s.URL, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	simVm := m.Map().Any("VirtualMachine").(*VirtualMachine)
+	vm := object.NewVirtualMachine(c.Client, simVm.Reference())
+
+	// Test with no snapshots
+	_, err = simVm.FindSnapshotTree("nonexistent")
+	if err == nil {
+		t.Fatal("expected error when no snapshots exist")
+	}
+
+	// Create root snapshot
+	task, err := vm.CreateSnapshot(ctx, "root", "root description", true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := task.WaitForResult(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rootRef := info.Result.(types.ManagedObjectReference)
+
+	// Create child snapshot
+	task, err = vm.CreateSnapshot(ctx, "child", "child description", true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	info, err = task.WaitForResult(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	childRef := info.Result.(types.ManagedObjectReference)
+
+	// Create grandchild snapshot
+	task, err = vm.CreateSnapshot(ctx, "grandchild", "grandchild description", true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	info, err = task.WaitForResult(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	grandchildRef := info.Result.(types.ManagedObjectReference)
+
+	// Test finding by name
+	rootTree, err := simVm.FindSnapshotTree("root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootTree.Name != "root" {
+		t.Fatalf("expected name 'root', got '%s'", rootTree.Name)
+	}
+	if rootTree.Description != "root description" {
+		t.Fatalf("expected description 'root description', got '%s'", rootTree.Description)
+	}
+	if rootTree.Snapshot.Value != rootRef.Value {
+		t.Fatalf("expected ref '%s', got '%s'", rootRef.Value, rootTree.Snapshot.Value)
+	}
+
+	childTree, err := simVm.FindSnapshotTree("child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if childTree.Name != "child" {
+		t.Fatalf("expected name 'child', got '%s'", childTree.Name)
+	}
+	if childTree.Description != "child description" {
+		t.Fatalf("expected description 'child description', got '%s'", childTree.Description)
+	}
+	if childTree.Snapshot.Value != childRef.Value {
+		t.Fatalf("expected ref '%s', got '%s'", childRef.Value, childTree.Snapshot.Value)
+	}
+
+	grandchildTree, err := simVm.FindSnapshotTree("grandchild")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grandchildTree.Name != "grandchild" {
+		t.Fatalf("expected name 'grandchild', got '%s'", grandchildTree.Name)
+	}
+	if grandchildTree.Description != "grandchild description" {
+		t.Fatalf("expected description 'grandchild description', got '%s'", grandchildTree.Description)
+	}
+	if grandchildTree.Snapshot.Value != grandchildRef.Value {
+		t.Fatalf("expected ref '%s', got '%s'", grandchildRef.Value, grandchildTree.Snapshot.Value)
+	}
+
+	// Test finding by ManagedObjectReference value
+	rootTreeByRef, err := simVm.FindSnapshotTree(rootRef.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootTreeByRef.Name != "root" {
+		t.Fatalf("expected name 'root', got '%s'", rootTreeByRef.Name)
+	}
+
+	childTreeByRef, err := simVm.FindSnapshotTree(childRef.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if childTreeByRef.Name != "child" {
+		t.Fatalf("expected name 'child', got '%s'", childTreeByRef.Name)
+	}
+
+	grandchildTreeByRef, err := simVm.FindSnapshotTree(grandchildRef.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grandchildTreeByRef.Name != "grandchild" {
+		t.Fatalf("expected name 'grandchild', got '%s'", grandchildTreeByRef.Name)
+	}
+
+	// Test finding non-existent snapshot
+	_, err = simVm.FindSnapshotTree("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for non-existent snapshot")
+	}
+
+	_, err = simVm.FindSnapshotTree("nonexistent-ref")
+	if err == nil {
+		t.Fatal("expected error for non-existent snapshot reference")
+	}
+
+	// Test that child snapshots are properly nested
+	if len(rootTree.ChildSnapshotList) == 0 {
+		t.Fatal("root snapshot should have child snapshots")
+	}
+
+	foundChild := false
+	for _, child := range rootTree.ChildSnapshotList {
+		if child.Name == "child" {
+			foundChild = true
+			if len(child.ChildSnapshotList) == 0 {
+				t.Fatal("child snapshot should have grandchild snapshots")
+			}
+			foundGrandchild := false
+			for _, grandchild := range child.ChildSnapshotList {
+				if grandchild.Name == "grandchild" {
+					foundGrandchild = true
+					break
+				}
+			}
+			if !foundGrandchild {
+				t.Fatal("should find grandchild in child's snapshot list")
+			}
+			break
+		}
+	}
+	if !foundChild {
+		t.Fatal("should find child in root's snapshot list")
+	}
 }
 
 func TestVmMarkAsTemplate(t *testing.T) {
